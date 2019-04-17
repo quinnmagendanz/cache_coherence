@@ -31,10 +31,17 @@ type
 
   -- Message enumeration: you must support the first three, but will need to
   -- add more message types (e.g., various ACKs)
-  MessageType: enum {  ReadReq,         -- request for shared state
-                       WriteReq,        -- write request
-                       WBReq            -- writeback request (w/ or wo/ data)
+  MessageType: enum {  ShReq,         -- request for shared state
+                       ExReq,         -- write request
+                       WbReq,         -- writeback request (w/ or wo/ data)
                        -- TODO: add more messages here!
+										   ShResp,
+										   ExResp,
+										   WbResp,
+										   InvReq,
+                       InvResp,
+                       DownReq,
+                       DownResp
                     };
 
   Message:
@@ -51,7 +58,9 @@ type
     Record
       -- home node state: you have three stable states (Ex,Sh,Un) but need to
       -- add transient states during races
-      state: enum { HEx, HSh, HUn -- TODO: add transient states here! 
+      state: enum { HEx, HSh, HUn,
+			 		-- TODO: add transient states here!
+			        HTPend 
                   };
 
       owner: Node;
@@ -64,7 +73,8 @@ type
     Record
       -- processor state: again, three stable states (M,S,I) but you need to
       -- TODO add transient states to support races
-      state: enum { PM, PS, PI
+      state: enum { PM, PS, PI,
+			        PPend
                   };
 
       -- TODO add other variables if needed
@@ -128,6 +138,21 @@ Begin
   MultiSetRemovePred(i:HomeNode.sharers, HomeNode.sharers[i] = n);
 End;
 
+Procedure SendInvReqToSharers(rqst:Node);
+Begin
+  for n:Node do
+    if (IsMember(n, Proc) &
+        MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = n) != 0)
+    then
+      if n != rqst
+      then
+        -- Send invalidation message here
+        Send(InvReq, HomeNode, n, VC0, UNDEFINED, UNDEFINED);
+      end;
+    end;
+  end;
+End;
+
 Procedure HomeReceive(msg:Message);
 var cnt:0..ProcCount;
 Begin
@@ -143,11 +168,19 @@ Begin
 
     switch msg.mtype
 
-    case ReadReq:
+    case ShReq:
       -- TODO: perform actions here!
+	 		-- ShReq / Sharers = Sharers + {P}; ExResp 
+      HomeNode.state := HSh;
+      AddToSharersList(msg.src);
+      Send(ShResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
 
-    case WriteReq:
+    case ExReq:
       -- TODO: perform actions here!
+			-- ExReq / Sharers = {P}; ExResp
+      HomeNode.state := HEx;
+      HomeNode.owner := msg.src;
+      Send(ExResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -160,14 +193,21 @@ Begin
 
     switch msg.mtype
 
-    case ReadReq:
+    case ShReq:
       -- TODO: perform actions here!
+			-- ShReq / Down(Sharer); Sharers = Sharer + {P}; ShResp
+      HomeNode.state := ESh;
+      AddToSharersList(msg.src);
+      Send(DownReq, HomeNode, HomeNode.owner, VC0, UNDEFINED, UNDEFINED);
+      Send(ShResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
+      undefine HomeNode.owner;
 
-    case WriteReq:
+    case WbReq:
       -- TODO: perform actions here!
-
-    case WBReq:
-      -- TODO: perform actions here!
+			-- WbReq / Sharers = {}; WbResp
+      HomeNode.state := EUn;
+      undefine HomeNode.owner;
+      Send(WbResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -179,11 +219,28 @@ Begin
 
     switch msg.mtype
 
-    case ReadReq:
+    case ShReq:
       -- TODO: perform actions here!
+			-- ShReq / Sharers = Sharers + {P}; ShResp
+      AddiToSharersList(msg.src);
+      Send(ShResp, HomeType, n, VC0, UNDEFINED, UNDEFINED);
 
-    case WriteReq:
+    case ExReq:
       -- TODO: perform actions here!
+			-- ExReq / Inv(Sharers - {P}); Sharers = {P}; ExResp
+      RemoveFromSharersList(msg.src);
+      SendInvReqToSharers(msg.src);
+      HomeNode.owner = msg.src;
+
+    case WbReq:
+      -- WbReq && |Sharers| > 1 / Sharers = Sharers - {P}; WbResp
+      -- WbReq && |Sharers| == 1 / Sharers = {}; WbResp
+      RemoveFromSharersList(msg.src);
+      if MultiSetCount(i:HomeNode.sharers, true) = 0
+      then
+        HomeNode.state := HUn;
+      end
+      Send(WBResp, HomeType, n, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -191,6 +248,7 @@ Begin
     endswitch;
 
   -- TODO: add other cases from home node state here!
+  -- TODO(magendanz) InvAck
 
   endswitch;
 
@@ -208,6 +266,18 @@ Begin
 
     switch msg.mtype
       -- TODO: handle message cases here!
+    case ShResp:
+
+
+    case ExResp:
+    
+
+    case WbResp:
+
+
+    case InvReq:
+
+
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
@@ -216,6 +286,21 @@ Begin
 
     switch msg.mtype
       -- TODO: handle message cases here!
+    case ShResp:
+
+
+    case ExResp:
+    
+
+    case WbResp:
+
+
+    case InvReq:
+      -- InvReq / InvResp(data)
+
+    case DownReq:
+      -- DownReq / DownResp(data)
+
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
@@ -224,6 +309,18 @@ Begin
 
     switch msg.mtype
       -- TODO: handle message cases here!
+    case ShResp:
+
+
+    case ExResp:
+    
+
+    case WbResp:
+
+
+    case InvReq:
+      -- InvReq / InvResp
+
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
