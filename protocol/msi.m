@@ -59,8 +59,9 @@ type
       -- home node state: you have three stable states (Ex,Sh,Un) but need to
       -- add transient states during races
       state: enum { HEx, HSh, HUn,
-			 		-- TODO: add transient states here!
-			        HTPend 
+			 		          -- TODO: add transient states here!
+			              HT_Down,
+                    HT_Inv
                   };
 
       owner: Node;
@@ -74,7 +75,9 @@ type
       -- processor state: again, three stable states (M,S,I) but you need to
       -- TODO add transient states to support races
       state: enum { PM, PS, PI,
-			        PPend
+			              PT_Ex,
+                    PT_Sh,
+                    PT_Wb
                   };
 
       -- TODO add other variables if needed
@@ -147,7 +150,7 @@ Begin
       if n != rqst
       then
         -- Send invalidation message here
-        Send(InvReq, HomeNode, n, VC0, UNDEFINED, UNDEFINED);
+        Send(InvReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
       end;
     end;
   end;
@@ -173,14 +176,14 @@ Begin
 	 		-- ShReq / Sharers = Sharers + {P}; ExResp 
       HomeNode.state := HSh;
       AddToSharersList(msg.src);
-      Send(ShResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
+      Send(ShResp, HomeType, msg.src, VC0, UNDEFINED, UNDEFINED);
 
     case ExReq:
       -- TODO: perform actions here!
 			-- ExReq / Sharers = {P}; ExResp
       HomeNode.state := HEx;
       HomeNode.owner := msg.src;
-      Send(ExResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
+      Send(ExResp, HomeType, msg.src, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -196,18 +199,16 @@ Begin
     case ShReq:
       -- TODO: perform actions here!
 			-- ShReq / Down(Sharer); Sharers = Sharer + {P}; ShResp
-      HomeNode.state := ESh;
-      AddToSharersList(msg.src);
-      Send(DownReq, HomeNode, HomeNode.owner, VC0, UNDEFINED, UNDEFINED);
-      Send(ShResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
-      undefine HomeNode.owner;
-
+      HomeNode.state := HT_Down;
+      Send(DownReq, HomeType, HomeNode.owner, VC0, UNDEFINED, UNDEFINED);
+      
     case WbReq:
       -- TODO: perform actions here!
 			-- WbReq / Sharers = {}; WbResp
       HomeNode.state := EUn;
+      HomeNode.val := msg.val;
       undefine HomeNode.owner;
-      Send(WbResp, HomeNode, msg.src, VC0, UNDEFINED, UNDEFINED);
+      Send(WbResp, HomeType, msg.src, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -222,8 +223,8 @@ Begin
     case ShReq:
       -- TODO: perform actions here!
 			-- ShReq / Sharers = Sharers + {P}; ShResp
-      AddiToSharersList(msg.src);
-      Send(ShResp, HomeType, n, VC0, UNDEFINED, UNDEFINED);
+      AddToSharersList(msg.src);
+      Send(ShResp, HomeType, msg.src, VC0, UNDEFINED, UNDEFINED);
 
     case ExReq:
       -- TODO: perform actions here!
@@ -236,16 +237,46 @@ Begin
       -- WbReq && |Sharers| > 1 / Sharers = Sharers - {P}; WbResp
       -- WbReq && |Sharers| == 1 / Sharers = {}; WbResp
       RemoveFromSharersList(msg.src);
-      if MultiSetCount(i:HomeNode.sharers, true) = 0
+      if cnt = 0
       then
         HomeNode.state := HUn;
       end
-      Send(WBResp, HomeType, n, VC0, UNDEFINED, UNDEFINED);
+      Send(WbResp, HomeType, msg.src, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
 
     endswitch;
+
+  case HT_Down:
+
+    switch msg.type
+   
+    case DownResp:
+      AddToSharersList(msg.src);
+      undefine HomeNode.owner;
+      Send(ShResp, HomeType, msg.src, VC0, UNDEFINED, UNDEFINED);
+
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+
+    endswitch;
+
+  case HT_Inv:
+
+    switch msg.type
+
+    case InvResp:
+      RemoveFromSharersList(msg.src);
+      if cnt = 0
+      then 
+        HomeNode.state := HEx;
+      end
+
+    else 
+      ErrorUnhandledMsg(msg, HomeType);
+
+    endswitch
 
   -- TODO: add other cases from home node state here!
   -- TODO(magendanz) InvAck
