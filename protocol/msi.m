@@ -238,8 +238,14 @@ Begin
 			-- ExReq / Inv(Sharers - {P}); Sharers = {P}; ExResp
       RemoveFromSharersList(msg.src);
       HomeNode.owner := msg.src;
-      HomeNode.state := HT_Clear;
-      SendInvReqToSharers(msg.src);
+	  	if cnt > 1
+	  	then
+      	HomeNode.state := HT_Clear;
+      	SendInvReqToSharers(msg.src);
+			else
+	    	HomeNode.state := HEx;
+      	Send(ExResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+			end;
 
     case WbReq:
       -- WbReq && |Sharers| > 1 / Sharers = Sharers - {P}; WbResp
@@ -277,12 +283,14 @@ Begin
     switch msg.mtype
 
     case WbReq:
+	  -- Remove the sharer who responded to the invalidation request
       if cnt >= 1
       then 
         RemoveFromSharersList(msg.src);
         Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
       end;
-      if MultiSetCount(i:HomeNode.sharers, true) = 0
+	  -- Move to next state if there were no sharers or last sharer removed
+      if cnt = 0 | cnt = 1
       then
         HomeNode.state := HEx;
         Send(ExResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
@@ -405,7 +413,7 @@ ruleset n:Proc Do
   rule "upgrade request"
     (p.state = PS)
   ==>
-    p.state := PT_Sh;
+    p.state := PT_Ex;
     Send(ExReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
     -- TODO: any other actions?
   endrule;
