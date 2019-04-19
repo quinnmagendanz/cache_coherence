@@ -9,7 +9,7 @@
 ----------------------------------------------------------------------
 const
   -- TODO: start with this number at 1, then increase to 2 and eventually 3
-  ProcCount: 2;          -- number processors
+  ProcCount: 3;          -- number processors
 
   VC0: 0;                -- low priority
   VC1: 1;
@@ -151,7 +151,7 @@ Begin
       if n != rqst
       then
         -- Send invalidation message here
-        Send(InvAck, n, HomeType, VC0, n, UNDEFINED);
+        Send(InvReq, n, HomeType, VC0, n, UNDEFINED);
       end;
     end;
   end;
@@ -178,14 +178,14 @@ Begin
 	 		-- ShReq / Sharers = Sharers + {P}; ExResp 
       HomeNode.state := HSh;
       AddToSharersList(msg.src);
-      Send(ShAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(ShAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 
     case ExReq:
       -- TODO: perform actions here!
 			-- ExReq / Sharers = {P}; ExResp
       HomeNode.state := HEx;
       HomeNode.owner := msg.src;
-      Send(ExAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(ExAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -213,7 +213,7 @@ Begin
 		case WbReq:
 			Assert(HomeNode.owner = msg.src) "Writeback not from owner.";
 			HomeNode.state := HUn;
-			Send(WbAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+			Send(WbAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 			undefine HomeNode.owner;
 
     else
@@ -230,7 +230,7 @@ Begin
 			-- ShReq / Sharers = Sharers + {P}; ShResp
       -- TODO(magendanz) add case where already sharer
       AddToSharersList(msg.src);
-      Send(ShAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(ShAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 
     case ExReq:
       -- TODO: perform actions here!
@@ -240,7 +240,7 @@ Begin
 	  	then
 	    	HomeNode.state := HEx;
         HomeNode.owner := msg.src;
-      	Send(ExAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+      	Send(ExAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 			else 
       	HomeNode.state := HT_Clear;
       	SendInvReqToSharers(msg.src);
@@ -249,7 +249,7 @@ Begin
     
 		case WbReq:
 	    RemoveFromSharersList(msg.src);
-      Send(WbAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(WbAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 	  	if (msg_in & cnt = 1)
 	  	then
 	    	HomeNode.state := HUn;
@@ -273,11 +273,11 @@ Begin
 
 		case WbReq:
 		  RemoveFromSharersList(msg.src);
-      Send(WbAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
 	  	if (msg_in & cnt = 1)
 	  	then
 	    	HomeNode.state := HUn;
 			end;
+			-- InvReq already on way.
 
     else 
       ErrorUnhandledMsg(msg, HomeType);
@@ -289,6 +289,7 @@ Begin
     case WbReq:
 			Assert(HomeNode.owner = msg.src) "Writeback not from owner.";
 	   	HomeNode.state := HUn;
+			undefine HomeNode.owner;
 			-- DownReq already on way.
 
 		case DownAck:
@@ -296,8 +297,8 @@ Begin
       -- Previous owner has just sent the WbReq.
 			AddToSharersList(msg.src);
 			AddToSharersList(msg.aux);
-      undefine HomeNode.owner;
 			HomeNode.state := HSh;
+      undefine HomeNode.owner;
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -308,9 +309,12 @@ Begin
 		switch msg.mtype
 		case InvAck:
       HomeNode.state := HUn;
+			undefine HomeNode.owner;
 
 		case WbReq:
+			Assert(HomeNode.owner = msg.src) "Writeback not from owner.";
 			HomeNode.state := HUn;
+			undefine HomeNode.owner;
 			-- InvReq already on way.
 
 		else 
@@ -335,8 +339,8 @@ Begin
     -- TODO: handle message cases here!
     case DownReq:
       ps := PS;
-      Send(DownAck, msg.src, p, VC0, msg.aux, UNDEFINED);
-			Send(ShAck, msg.aux, p, VC0, UNDEFINED, UNDEFINED);
+      Send(DownAck, msg.src, p, VC2, msg.aux, UNDEFINED);
+			Send(ShAck, msg.aux, p, VC2, UNDEFINED, UNDEFINED);
 
 		case InvReq:
 			ps := PI;
@@ -352,7 +356,7 @@ Begin
     case InvReq:
       -- InvReq / InvResp
       ps := PI;
-      Send(InvAck, msg.src, p, VC0, UNDEFINED, UNDEFINED);
+      Send(InvAck, msg.src, p, VC2, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, p);
@@ -375,7 +379,7 @@ Begin
     case ExAck:
       ps := PM;
 		case InvReq:
-      Send(InvAck, msg.src, p, VC0, UNDEFINED, UNDEFINED);
+      Send(InvAck, msg.src, p, VC2, UNDEFINED, UNDEFINED);
     else 
       ErrorUnhandledMsg(msg, p);
     endswitch;
