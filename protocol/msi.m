@@ -1,14 +1,10 @@
 -- 6.823 Lab 3
 -- Protocol Framework
 
--- See the lines marked TODO in file below. Try adding support for just a read
--- request first (comment out other starting rules).
-
 ----------------------------------------------------------------------
 -- Constants
 ----------------------------------------------------------------------
 const
-  -- TODO: start with this number at 1, then increase to 2 and eventually 3
   ProcCount: 3;          -- number processors
 
   VC0: 0;                -- low priority
@@ -32,15 +28,14 @@ type
   -- Message enumeration: you must support the first three, but will need to
   -- add more message types (e.g., various ACKs)
   MessageType: enum {  ShReq,         -- request for shared state
-                       ExReq,         -- write request
-                       WbReq,         -- writeback request (w/ or wo/ data)
-                       -- TODO: add more messages here!
-										   ShAck,
+										   ShAck, 
+                       ExReq,         -- request for writable state
 										   ExAck,
+                       WbReq,         -- writeback request (w/ or wo/ data)
 											 WbAck,
-										   InvReq,
+										   InvReq,        -- request for a processor to invalidate
                        InvAck,
-											 DownReq,
+											 DownReq,       -- request for a processor to downgrade from M to S
 											 DownAck
                     };
 
@@ -58,30 +53,29 @@ type
     Record
       -- home node state: you have three stable states (Ex,Sh,Un) but need to
       -- add transient states during races
-      state: enum { HEx, HSh, HUn,
-			 		          -- TODO: add transient states here!
-                    HT_Down,
-										HT_Inv,
-										HT_Clear
+      state: enum { HEx,			-- State of exclusive ownership
+						 				HSh,			-- State of sharing
+									 	HUn,			-- State of no use
+                    HT_Down,	-- Transition state from Ex -> Sh
+										HT_Inv,   -- Transition state from Ex -> U
+										HT_Clear  -- Transition state from S -> U
                   };
 
       owner: Node;
       sharers: multiset [ProcCount] of Node;
       pending_node: Node; -- you may find this useful;
-      -- TODO add other variables if needed
     End;
 
   ProcState:
     Record
       -- processor state: again, three stable states (M,S,I) but you need to
-      -- TODO add transient states to support races
-      state: enum { PM, PS, PI,
-			              PT_Ex,
-										PT_Sh,
-                    PT_Wb
+      state: enum { PM,     -- State of write access
+										PS,     -- State of read access
+									 	PI,     -- State of invalidity
+			              PT_Ex,	-- Transition state getting write permission
+										PT_Sh,  -- Transition state getting read permission
+                    PT_Wb   -- Transistion state while writeback
                   };
-
-      -- TODO add other variables if needed
     End;
 
 ----------------------------------------------------------------------
@@ -159,11 +153,12 @@ End;
 
 Procedure HomeReceive(msg:Message);
 var cnt:0..ProcCount;
-var msg_in: boolean;
+var msg_in_sharers: boolean;
 Begin
   -- compiler barfs if we put this inside the switch
   cnt := MultiSetCount(i:HomeNode.sharers, true);
-  msg_in := MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = msg.src) = 1;
+	msg_in_sharers := MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = msg.src) = 1;
+
 
   -- default to 'processing' message.  set to false otherwise
   msg_processed := true;
@@ -174,14 +169,12 @@ Begin
 
     switch msg.mtype
     case ShReq:
-      -- TODO: perform actions here!
 	 		-- ShReq / Sharers = Sharers + {P}; ExResp 
       HomeNode.state := HSh;
       AddToSharersList(msg.src);
       Send(ShAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 
     case ExReq:
-      -- TODO: perform actions here!
 			-- ExReq / Sharers = {P}; ExResp
       HomeNode.state := HEx;
       HomeNode.owner := msg.src;
@@ -199,13 +192,11 @@ Begin
     switch msg.mtype
 	  case ExReq:
       -- ExReq / Down(Sharer); Sharer = {P}; ExResp
-	  	-- TODO(magendanz) add case where is current owner
       HomeNode.state := HT_Inv; 
       Send(InvReq, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
 			msg_processed := false;
 
     case ShReq:
-      -- TODO: perform actions here!
 			-- ShReq / Down(Sharer); Sharers = Sharer + {P}; ShResp
       HomeNode.state := HT_Down;
       Send(DownReq, HomeNode.owner, HomeType, VC0, msg.src, UNDEFINED);
@@ -226,17 +217,14 @@ Begin
 
     switch msg.mtype
     case ShReq:
-      -- TODO: perform actions here!
 			-- ShReq / Sharers = Sharers + {P}; ShResp
-      -- TODO(magendanz) add case where already sharer
       AddToSharersList(msg.src);
       Send(ShAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
 
     case ExReq:
-      -- TODO: perform actions here!
 			-- ExReq / Inv(Sharers - {P}); Sharers = {P}; ExResp
       RemoveFromSharersList(msg.src);
-	  	if (msg_in & cnt = 1)
+	  	if (cnt = 1 & msg_in_sharers)
 	  	then
 	    	HomeNode.state := HEx;
         HomeNode.owner := msg.src;
@@ -250,7 +238,7 @@ Begin
 		case WbReq:
 	    RemoveFromSharersList(msg.src);
       Send(WbAck, msg.src, HomeType, VC2, UNDEFINED, UNDEFINED);
-	  	if (msg_in & cnt = 1)
+	  	if (cnt = 1 & msg_in_sharers)
 	  	then
 	    	HomeNode.state := HUn;
 			end;
@@ -263,21 +251,19 @@ Begin
     -- Temporary state used to wait until all sharers have finished invalidating.
     switch msg.mtype
     case InvAck:
-	  	-- Remove the sharer who responded to the invalidation request
       RemoveFromSharersList(msg.src);
-	  	-- Move to next state if there were no sharers or last sharer removed
-      if (cnt = 0 | cnt = 1)
+      if (cnt = 1 & msg_in_sharers)
       then
         HomeNode.state := HUn;
       end;
 
 		case WbReq:
+			-- InvReq already on way.
 		  RemoveFromSharersList(msg.src);
-	  	if (msg_in & cnt = 1)
+	  	if (cnt = 1 & msg_in_sharers)
 	  	then
 	    	HomeNode.state := HUn;
 			end;
-			-- InvReq already on way.
 
     else 
       ErrorUnhandledMsg(msg, HomeType);
@@ -287,14 +273,13 @@ Begin
     -- Temporary state used to wait to share until owner has finished WB.
     switch msg.mtype
     case WbReq:
+			-- DownReq already on way.
 			Assert(HomeNode.owner = msg.src) "Writeback not from owner.";
 	   	HomeNode.state := HUn;
 			undefine HomeNode.owner;
-			-- DownReq already on way.
 
 		case DownAck:
-      -- Note that temporary owner is node that made ShReq.
-      -- Previous owner has just sent the WbReq.
+			-- msg.aux contains p which sent the ShReq
 			AddToSharersList(msg.src);
 			AddToSharersList(msg.aux);
 			HomeNode.state := HSh;
@@ -312,16 +297,15 @@ Begin
 			undefine HomeNode.owner;
 
 		case WbReq:
+			-- InvReq already on way.
 			Assert(HomeNode.owner = msg.src) "Writeback not from owner.";
 			HomeNode.state := HUn;
 			undefine HomeNode.owner;
-			-- InvReq already on way.
 
 		else 
       ErrorUnhandledMsg(msg, HomeType);
     endswitch;
 
-  -- TODO: add other cases from home node state here!
   endswitch;
 
 End;
@@ -336,7 +320,6 @@ Begin
   switch ps
   case PM:
     switch msg.mtype
-    -- TODO: handle message cases here!
     case DownReq:
       ps := PS;
       Send(DownAck, msg.src, p, VC2, msg.aux, UNDEFINED);
@@ -352,7 +335,6 @@ Begin
 
   case PS:
     switch msg.mtype
-      -- TODO: handle message cases here!
     case InvReq:
       -- InvReq / InvResp
       ps := PI;
@@ -397,8 +379,6 @@ Begin
       ErrorUnhandledMsg(msg, p);
     endswitch;
 
-	-- TODO: add additional states from Proc here!
-
   ----------------------------
   -- Error catch
   ----------------------------
@@ -423,7 +403,6 @@ ruleset n:Proc Do
   ==>
     p.state := PT_Sh;
     Send(ShReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
   endrule;
 
   rule "write request"
@@ -431,7 +410,6 @@ ruleset n:Proc Do
   ==>
     p.state := PT_Ex;
     Send(ExReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
   endrule;
 
   rule "upgrade request"
@@ -439,7 +417,6 @@ ruleset n:Proc Do
   ==>
     p.state := PT_Ex;
     Send(ExReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
   endrule;
 
   rule "writeback"
@@ -447,7 +424,6 @@ ruleset n:Proc Do
   ==>
     p.state := PT_Wb;
     Send(WbReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
-    -- TODO: any other actions?
   endrule;
 
   rule "evict"
@@ -513,7 +489,6 @@ startstate
   -- processor initialization
   for i:Proc do
     Procs[i].state := PI;
-    -- TODO: any other initialization?
   end;
 
   -- network initialization
