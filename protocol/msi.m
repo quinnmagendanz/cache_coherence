@@ -16,7 +16,7 @@ const
   VC2: 2;                -- high priority
   NumVCs: VC2 - VC0 + 1;
   QMax: 2;
-  NetMax: ProcCount+1;
+  NetMax: ProcCount+3;
 
 
 ----------------------------------------------------------------------
@@ -35,13 +35,15 @@ type
                        ExReq,         -- write request
                        WbReq,         -- writeback request (w/ or wo/ data)
                        -- TODO: add more messages here!
-										   ShResp,
-										   ExResp,
-										   WbResp,
+										   ShAck,
+										   ExAck,
 										   InvReq,
-                       InvResp,
-                       DownReq
-                       -- DownResp = WbReq
+                       InvAck,
+											 InvDone,
+											 DownReq,
+											 DownAck,
+											 WbAck,
+											 DownDone
                     };
 
   Message:
@@ -60,8 +62,11 @@ type
       -- add transient states during races
       state: enum { HEx, HSh, HUn,
 			 		          -- TODO: add transient states here!
-			              HT_Down,
-                    HT_Clear
+			              HT_Ex,
+                    HT_Down,
+										HT_Wb,
+										HT_Inv,
+										HT_Clear
                   };
 
       owner: Node;
@@ -76,8 +81,10 @@ type
       -- TODO add transient states to support races
       state: enum { PM, PS, PI,
 			              PT_Ex,
-                    PT_Sh,
-                    PT_Wb
+										PT_Sh,
+										PT_Down,
+                    PT_Wb,
+										PT_Inv
                   };
 
       -- TODO add other variables if needed
@@ -116,8 +123,11 @@ End;
 Procedure ErrorUnhandledMsg(msg:Message; n:Node);
 Begin
   switch msg.mtype
-  case ExReq, ShReq, WbReq, DownReq, InvReq:
-    msg_processed := false;  -- we can receive a raw request any time
+  case ExReq, ShReq, InvAck, DownAck:
+    msg_processed := false; 	-- we can receive a raw request any time
+															-- or we need to push off an Ack until in correct state
+	case DownReq, InvReq:
+		-- Drop DownReqs and InvReqs that are recieved when we are not in HEx or HSh.
   else
     error "Unhandled message type!"; -- or message type that breaks invarients
   endswitch;
@@ -150,7 +160,7 @@ Begin
       if n != rqst
       then
         -- Send invalidation message here
-        Send(InvReq, n, HomeType, VC0, UNDEFINED, UNDEFINED);
+        Send(InvAck, n, HomeType, VC0, UNDEFINED, UNDEFINED);
       end;
     end;
   end;
@@ -172,23 +182,19 @@ Begin
     Assert (cnt = 0) "Sharers list non-empty, but line is Unshared";
 
     switch msg.mtype
-
     case ShReq:
       -- TODO: perform actions here!
 	 		-- ShReq / Sharers = Sharers + {P}; ExResp 
       HomeNode.state := HSh;
       AddToSharersList(msg.src);
-      Send(ShResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(ShAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
 
     case ExReq:
       -- TODO: perform actions here!
 			-- ExReq / Sharers = {P}; ExResp
       HomeNode.state := HEx;
       HomeNode.owner := msg.src;
-      Send(ExResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
-
-		case InvResp:
-			-- Already done.
+      Send(ExAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -200,31 +206,29 @@ Begin
        "HomeNode has no owner, but line is Exclusive";
 
     switch msg.mtype
-
 	  case ExReq:
       -- ExReq / Down(Sharer); Sharer = {P}; ExResp
 	  	-- TODO(magendanz) add case where is current owner
-      HomeNode.state := HT_Clear; 
-      Send(DownReq, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+      HomeNode.state := HT_Ex; 
+      Send(DownAck, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
       HomeNode.owner := msg.src;
 
     case ShReq:
       -- TODO: perform actions here!
 			-- ShReq / Down(Sharer); Sharers = Sharer + {P}; ShResp
       HomeNode.state := HT_Down;
-      Send(DownReq, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(DownAck, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
       HomeNode.owner := msg.src;  -- Temporarily make ShReq node owner. 
       
-    case WbReq:
+    case DownReq:
       -- TODO: perform actions here!
 			-- WbReq / Sharers = {}; WbResp
-      Assert (HomeNode.owner = msg.src) "Non-owner writing";
-      HomeNode.state := HUn;
-      undefine HomeNode.owner;
-      Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
-
-		case InvResp:
-			-- Already done.
+			if HomeNode.owner = msg.src
+			then
+     		HomeNode.state := HT_Wb;
+     		undefine HomeNode.owner;
+     		Send(DownAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+			end; -- Drop old WbReqs from former, different owners
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -235,92 +239,111 @@ Begin
     Assert (cnt != 0) "sharers list empty, but line is shared";
 
     switch msg.mtype
-
     case ShReq:
       -- TODO: perform actions here!
 			-- ShReq / Sharers = Sharers + {P}; ShResp
       -- TODO(magendanz) add case where already sharer
       AddToSharersList(msg.src);
-      Send(ShResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(ShAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
 
     case ExReq:
       -- TODO: perform actions here!
 			-- ExReq / Inv(Sharers - {P}); Sharers = {P}; ExResp
       RemoveFromSharersList(msg.src);
       HomeNode.owner := msg.src;
-	  	if (msg_in & cnt = 1)|(msg_in & cnt = 0)
+	  	if (msg_in & cnt = 1)
 	  	then
 	    	HomeNode.state := HEx;
-      	Send(ExResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+      	Send(ExAck, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
 			else 
       	HomeNode.state := HT_Clear;
       	SendInvReqToSharers(msg.src);
 			end;
 
-    case WbReq:
+    case InvReq:
       -- WbReq && |Sharers| > 1 / Sharers = Sharers - {P}; WbResp
       -- WbReq && |Sharers| == 1 / Sharers = {}; WbResp
-      if cnt = 1 & msg_in
-      then
-        HomeNode.state := HUn;
-      end;
-      RemoveFromSharersList(msg.src);
-      Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
-
-		case InvResp:
-			-- Already done.
+			if msg_in
+			then
+				HomeNode.state := HT_Inv;
+      	RemoveFromSharersList(msg.src);
+      	Send(InvAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+			end;
 
     else
       ErrorUnhandledMsg(msg, HomeType);
-
-    endswitch;
-
-  case HT_Down:
-    -- Temporary state used to wait until owner has ACKed Down.
-    switch msg.mtype
-   
-    case WbReq:
-      -- Note that temporary owner is node that made ShReq.
-      -- Previous owner has just sent the WbReq.
-      Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
-			Send(ShResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
-			AddToSharersList(HomeNode.owner);
-      undefine HomeNode.owner;
-			HomeNode.state := HSh;
-
-    else
-      ErrorUnhandledMsg(msg, HomeType);
-
     endswitch;
 
   case HT_Clear:
-    -- Temporary state used to wait until all sharers have ACKed invalidated.
+    -- Temporary state used to wait until all sharers have finished invalidating.
     switch msg.mtype
-
-    case WbReq, InvResp:
-	  -- Remove the sharer who responded to the invalidation request
-      if cnt >= 1
-      then 
-        RemoveFromSharersList(msg.src);
-        if msg.mtype = WbReq
-				then
-					Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
-				end;
-      end;
-	  -- Move to next state if there were no sharers or last sharer removed
+    case InvDone:
+	  	-- Remove the sharer who responded to the invalidation request
+      RemoveFromSharersList(msg.src);
+	  	-- Move to next state if there were no sharers or last sharer removed
       if cnt = 0 | cnt = 1
       then
         HomeNode.state := HEx;
-        Send(ExResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+        Send(ExAck, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
       end;
-
     else 
       ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
 
+	case HT_Down:
+    -- Temporary state used to wait to share until owner has finished WB.
+    switch msg.mtype
+    case WbReq:
+      Send(WbAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+		case DownDone:
+      -- Note that temporary owner is node that made ShReq.
+      -- Previous owner has just sent the WbReq.
+			Send(ShAck, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+			AddToSharersList(HomeNode.owner);
+      undefine HomeNode.owner;
+			HomeNode.state := HSh;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
+
+	case HT_Wb:
+		-- Temporary state used to wait to release until owner has finished WB.
+		switch msg.mtype
+		case WbReq:
+      Send(WbAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+		case DownDone:
+			HomeNode.state := HUn;
+    else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
+
+	case HT_Ex:
+		-- Temporary state used to wait to change owner until owner has finished WB.
+  	switch msg.mtype
+		case WbReq:
+      Send(WbAck, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+		case DownDone:
+      Send(ExAck, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+			HomeNode.state := HEx;
+		else
+      ErrorUnhandledMsg(msg, HomeType);
+    endswitch;
+
+	case HT_Inv:
+		-- Temporary state used to wait for sharer to invalidate.
+		switch msg.mtype
+		case InvDone:
+   		if cnt = 0
+      then
+        HomeNode.state := HUn;
+			else 
+				HomeNode.state := HSh;
+      end;
+		else 
+      ErrorUnhandledMsg(msg, HomeType);
     endswitch;
 
   -- TODO: add other cases from home node state here!
-
   endswitch;
 
 End;
@@ -334,10 +357,9 @@ Begin
 
   switch ps
   case PM:
-
     switch msg.mtype
-      -- TODO: handle message cases here!
-    case DownReq:
+    -- TODO: handle message cases here!
+    case DownAck:
       ps := PT_Wb;
       Send(WbReq, msg.src, p, VC0, UNDEFINED, UNDEFINED);
 
@@ -346,65 +368,65 @@ Begin
     endswitch;
 
   case PS:
-
     switch msg.mtype
       -- TODO: handle message cases here!
-
-    case InvReq:
+    case InvAck:
       -- InvReq / InvResp
-      ps := PT_Wb;
-      Send(WbReq, msg.src, p, VC0, UNDEFINED, UNDEFINED);
+      ps := PI;
+      Send(InvDone, msg.src, p, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
 
 	case PI:
-		switch msg.mtype
-		case DownReq, InvReq:
-			-- Already done.
-			
-		else
-			ErrorUnhandledMsg(msg, p);
-		endswitch;
+		-- Should get no messages from the dictionary.
+		ErrorUnhandledMsg(msg, p);
 
   case PT_Sh:
-
     switch msg.mtype
-
-    case ShResp:
+    case ShAck:
       ps := PS;
-
     else 
       ErrorUnhandledMsg(msg, p);
     endswitch;
 
   case PT_Ex:
-
     switch msg.mtype
-
-    case ExResp:
+    case ExAck:
       ps := PM;
-		
-		case InvReq:
-      Send(InvResp, msg.src, p, VC0, UNDEFINED, UNDEFINED);
-
+		case InvAck:
+      Send(InvDone, msg.src, p, VC0, UNDEFINED, UNDEFINED);
     else 
       ErrorUnhandledMsg(msg, p);
     endswitch;
 
-  case PT_Wb:
+ 	case PT_Down:
+		switch msg.mtype
+		case DownAck:
+			ps := PT_Wb;
+      Send(WbReq, msg.src, p, VC0, UNDEFINED, UNDEFINED);
+		else 
+      ErrorUnhandledMsg(msg, p);
+    endswitch;
+	 
+	case PT_Wb:
     switch msg.mtype
-
-    case WbResp:
+    case WbAck:
       ps := PI;
-
-		case DownReq:
-			-- Already done. Drop message
-
+      Send(DownDone, msg.src, p, VC0, UNDEFINED, UNDEFINED);
     else 
       ErrorUnhandledMsg(msg, p);
     endswitch;
+
+	case PT_Inv:
+		switch msg.mtype
+		case InvAck:
+			ps := PI;
+      Send(InvDone, msg.src, p, VC0, UNDEFINED, UNDEFINED);
+		else
+			ErrorUnhandledMsg(msg, p);
+		endswitch;
 
  -- TODO: add additional states from Proc here!
 
@@ -454,16 +476,16 @@ ruleset n:Proc Do
   rule "writeback"
     (p.state = PM)
   ==>
-    p.state := PT_Wb;
-    Send(WbReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
+    p.state := PT_Down;
+    Send(DownReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
     -- TODO: any other actions?
   endrule;
 
   rule "evict"
     (p.state = PS)
   ==>
-    p.state := PT_Wb;
-    Send(WbReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
+    p.state := PT_Inv;
+    Send(InvReq, HomeType, n, VC0, UNDEFINED, UNDEFINED);
   endrule;
 
   endalias;
