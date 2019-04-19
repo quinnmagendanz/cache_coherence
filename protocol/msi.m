@@ -9,7 +9,7 @@
 ----------------------------------------------------------------------
 const
   -- TODO: start with this number at 1, then increase to 2 and eventually 3
-  ProcCount: 1;          -- number processors
+  ProcCount: 2;          -- number processors
 
   VC0: 0;                -- low priority
   VC1: 1;
@@ -39,7 +39,7 @@ type
 										   ExResp,
 										   WbResp,
 										   InvReq,
-                       -- InvResp = WbReq
+                       InvResp,
                        DownReq
                        -- DownResp = WbReq
                     };
@@ -116,7 +116,7 @@ End;
 Procedure ErrorUnhandledMsg(msg:Message; n:Node);
 Begin
   switch msg.mtype
-  case ExReq, ShReq, WbReq:
+  case ExReq, ShReq, WbReq, DownReq, InvReq:
     msg_processed := false;  -- we can receive a raw request any time
   else
     error "Unhandled message type!"; -- or message type that breaks invarients
@@ -158,9 +158,11 @@ End;
 
 Procedure HomeReceive(msg:Message);
 var cnt:0..ProcCount;
+var msg_in: boolean;
 Begin
   -- compiler barfs if we put this inside the switch
   cnt := MultiSetCount(i:HomeNode.sharers, true);
+  msg_in := MultiSetCount(i:HomeNode.sharers, HomeNode.sharers[i] = msg.src) = 1;
 
   -- default to 'processing' message.  set to false otherwise
   msg_processed := true;
@@ -185,6 +187,9 @@ Begin
       HomeNode.owner := msg.src;
       Send(ExResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
 
+		case InvResp:
+			-- Already done.
+
     else
       ErrorUnhandledMsg(msg, HomeType);
 
@@ -198,6 +203,7 @@ Begin
 
 	  case ExReq:
       -- ExReq / Down(Sharer); Sharer = {P}; ExResp
+	  	-- TODO(magendanz) add case where is current owner
       HomeNode.state := HT_Clear; 
       Send(DownReq, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
       HomeNode.owner := msg.src;
@@ -217,6 +223,9 @@ Begin
       undefine HomeNode.owner;
       Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
 
+		case InvResp:
+			-- Already done.
+
     else
       ErrorUnhandledMsg(msg, HomeType);
 
@@ -230,6 +239,7 @@ Begin
     case ShReq:
       -- TODO: perform actions here!
 			-- ShReq / Sharers = Sharers + {P}; ShResp
+      -- TODO(magendanz) add case where already sharer
       AddToSharersList(msg.src);
       Send(ShResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
 
@@ -238,24 +248,27 @@ Begin
 			-- ExReq / Inv(Sharers - {P}); Sharers = {P}; ExResp
       RemoveFromSharersList(msg.src);
       HomeNode.owner := msg.src;
-	  	if cnt > 1
+	  	if (msg_in & cnt = 1)|(msg_in & cnt = 0)
 	  	then
-      	HomeNode.state := HT_Clear;
-      	SendInvReqToSharers(msg.src);
-			else
 	    	HomeNode.state := HEx;
       	Send(ExResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+			else 
+      	HomeNode.state := HT_Clear;
+      	SendInvReqToSharers(msg.src);
 			end;
 
     case WbReq:
       -- WbReq && |Sharers| > 1 / Sharers = Sharers - {P}; WbResp
       -- WbReq && |Sharers| == 1 / Sharers = {}; WbResp
-      if cnt = 1
+      if cnt = 1 & msg_in
       then
         HomeNode.state := HUn;
       end;
       RemoveFromSharersList(msg.src);
       Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+
+		case InvResp:
+			-- Already done.
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -269,9 +282,11 @@ Begin
     case WbReq:
       -- Note that temporary owner is node that made ShReq.
       -- Previous owner has just sent the WbReq.
-      AddToSharersList(HomeNode.owner);
-      Send(ShResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+      Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+			Send(ShResp, HomeNode.owner, HomeType, VC0, UNDEFINED, UNDEFINED);
+			AddToSharersList(HomeNode.owner);
       undefine HomeNode.owner;
+			HomeNode.state := HSh;
 
     else
       ErrorUnhandledMsg(msg, HomeType);
@@ -282,12 +297,15 @@ Begin
     -- Temporary state used to wait until all sharers have ACKed invalidated.
     switch msg.mtype
 
-    case WbReq:
+    case WbReq, InvResp:
 	  -- Remove the sharer who responded to the invalidation request
       if cnt >= 1
       then 
         RemoveFromSharersList(msg.src);
-        Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+        if msg.mtype = WbReq
+				then
+					Send(WbResp, msg.src, HomeType, VC0, UNDEFINED, UNDEFINED);
+				end;
       end;
 	  -- Move to next state if there were no sharers or last sharer removed
       if cnt = 0 | cnt = 1
@@ -321,7 +339,7 @@ Begin
       -- TODO: handle message cases here!
     case DownReq:
       ps := PT_Wb;
-      Send(WbReq, msg.src, p, VC1, UNDEFINED, UNDEFINED);
+      Send(WbReq, msg.src, p, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, p);
@@ -335,11 +353,20 @@ Begin
     case InvReq:
       -- InvReq / InvResp
       ps := PT_Wb;
-      Send(WbReq, msg.src, p, VC1, UNDEFINED, UNDEFINED);
+      Send(WbReq, msg.src, p, VC0, UNDEFINED, UNDEFINED);
 
     else
       ErrorUnhandledMsg(msg, p);
     endswitch;
+
+	case PI:
+		switch msg.mtype
+		case DownReq, InvReq:
+			-- Already done.
+			
+		else
+			ErrorUnhandledMsg(msg, p);
+		endswitch;
 
   case PT_Sh:
 
@@ -358,6 +385,9 @@ Begin
 
     case ExResp:
       ps := PM;
+		
+		case InvReq:
+      Send(InvResp, msg.src, p, VC0, UNDEFINED, UNDEFINED);
 
     else 
       ErrorUnhandledMsg(msg, p);
@@ -368,6 +398,9 @@ Begin
 
     case WbResp:
       ps := PI;
+
+		case DownReq:
+			-- Already done. Drop message
 
     else 
       ErrorUnhandledMsg(msg, p);
