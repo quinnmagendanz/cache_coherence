@@ -180,9 +180,8 @@ Begin
       HomeNode.owner := msg.src; --remember who the new owner will be
 
     case WBReq:
-      assert (msg.src = HomeNode.owner) "Writeback from non-owner";
+      Assert (msg.src = HomeNode.owner) "Writeback from non-owner";
       HomeNode.state := H_Invalid;
-      HomeNode.val := msg.val;
       Send(WBAck, msg.src, HomeType, VC1, UNDEFINED);
       undefine HomeNode.owner
 

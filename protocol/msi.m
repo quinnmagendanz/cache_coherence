@@ -12,7 +12,7 @@ const
   VC2: 2;                -- high priority
   NumVCs: VC2 - VC0 + 1;
   QMax: 2;
-  NetMax: 2*ProcCount+1;
+  NetMax: 2*(ProcCount-1) + 1;
 
 
 ----------------------------------------------------------------------
